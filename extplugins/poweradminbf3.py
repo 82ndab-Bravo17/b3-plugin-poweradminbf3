@@ -49,8 +49,10 @@
 # 0.19 - add commands !yell !yellplayer !yellteam !yellsquad (requires B3 1.8.1+)
 # 0.20 - add command !nuke
 # 1.0 - fixes !yell
+# 1.0.1 - Refactor autobalance logic flow, and add variable swap threshold
 #
-__version__ = '1.0'
+__version__ = '1.0.1'
+
 __author__  = 'Courgette, 82ndab-Bravo17, ozon, Mario'
 
 import re
@@ -152,6 +154,7 @@ class Poweradminbf3Plugin(Plugin):
         self.no_level_check_level = 100
         self._configmanager_delay = 5
         self._team_swap_threshold = 3
+        self._team_swap_threshold_prop = False
         self._autoassign = False
         self._no_autoassign_level = 20
         self._joined_order = []
@@ -222,7 +225,6 @@ class Poweradminbf3Plugin(Plugin):
             self._scrambler.onRoundOverTeamScores(event.data)
 
         elif event.type == b3.events.EVT_GAME_ROUND_START:
-            self.start_autobalance_cron()
             self.debug('manual scramble planned : '.rjust(30) + str(self._scrambling_planned))
             self.debug('auto scramble rounds : '.rjust(30) + str(self._autoscramble_rounds))
             self.debug('auto scramble maps : '.rjust(30) + str(self._autoscramble_maps))
@@ -240,6 +242,7 @@ class Poweradminbf3Plugin(Plugin):
                     self._scrambler.scrambleTeams()
             self.debug('Scrambling finished, Autoassign now active')
             self._scramblingdone = True
+            self.start_autobalance_cron()
 
         elif event.type == b3.events.EVT_GAME_ROUND_END:
 
@@ -1064,6 +1067,21 @@ class Poweradminbf3Plugin(Plugin):
             self._team_swap_threshold = 2
         self.info('team swap threshold is %s' % self._team_swap_threshold)
 
+        try:
+            self._team_swap_threshold_prop = self.config.getboolean('preferences', 'team_swap_threshold_prop')
+        except NoOptionError:
+            self.info('No config option \"preferences\\team_swap_threshold_prop\" found. Using default value : %s' % self._team_swap_threshold_prop)
+        except ValueError, err:
+            self.debug(err)
+            self.warning('Could not read level value from config option \"preferences\\team_swap_threshold_prop\". Using default value \"%s\" instead. (%s)' % (self._team_swap_threshold_prop, err))
+        except Exception, err:
+            self.error(err)
+        if self._team_swap_threshold_prop:
+            self.info('Team swap threshold will vary according to server population')
+        else:
+            self.info('Team swap threshold is constant')
+
+
     def _load_configmanager(self):
         try:
             self._configmanager = self.config.getboolean('configmanager', 'status')
@@ -1353,46 +1371,44 @@ class Poweradminbf3Plugin(Plugin):
         Perform Auto balance to keep teams balanced
         """
         clients = self.console.clients.getList()
-        if len(clients) < 3:
-            return
         team1, team2 = self.count_teams(clients)
+        self.set_swap_threshold(team1+team2)
         team1more = team1 - team2
         team2more = team2 - team1
-        self.debug('Team1 %s vs Team2 %s' % (team1, team2))
-        if team1more < self._team_swap_threshold and team2more < self._team_swap_threshold:
-            self.start_autobalance_cron()
-            return
-        self._run_autobalancer = True
-        self.console.say('Auto balancing teams in %s seconds' % (self._autobalance_message_interval*2))
-        i = 0
-        while i < self._autobalance_message_interval:
-            time.sleep(1)
-            i += 1
+        self.debug('Team1 %s vs Team2 %s, threshold %s' % (team1, team2, self._team_swap_threshold_current))
+        if team1more >= self._team_swap_threshold_current or team2more >= self._team_swap_threshold_current:
+            self._run_autobalancer = True
+            self.console.say('Auto balancing teams in %s seconds' % (self._autobalance_message_interval*2))
+            i = 0
+            while i < self._autobalance_message_interval:
+                time.sleep(1)
+                i += 1
 
-        self.console.say('Auto balancing teams in %s seconds' % self._autobalance_message_interval)
-        i = 0
-        while i < self._autobalance_message_interval:
-            time.sleep(1)
-            i += 1
-        self.console.say('Auto balancing teams')
-        self.debug('Auto balancing teams')
+            self.console.say('Auto balancing teams in %s seconds' % self._autobalance_message_interval)
+            i = 0
+            while i < self._autobalance_message_interval:
+                time.sleep(1)
+                i += 1
+            self.console.say('Auto balancing teams')
+            self.debug('Auto balancing teams')
 
-        clients = self.console.clients.getList()
-        if len(clients)<=3:
-            return
-        team1, team2 = self.count_teams(clients)
-        team1more = team1 - team2
-        team2more = team2 - team1
-        self.debug('Team1 %s vs Team2 %s' % (team1, team2))
-        if team1more < self._team_swap_threshold and team2more < self._team_swap_threshold:
-            return
-        if team1more > 0:
-            players_to_move = team1more//2
-            self.auto_move_players( 1, players_to_move)
+            clients = self.console.clients.getList()
+            team1, team2 = self.count_teams(clients)
+            self.set_swap_threshold(team1+team2)
+            team1more = team1 - team2
+            team2more = team2 - team1
+            self.debug('Team1 %s vs Team2 %s, threshold %s' % (team1, team2, self._team_swap_threshold_current))
+            if team1more >= self._team_swap_threshold_current or team2more >= self._team_swap_threshold_current:
+                if team1more > 0:
+                    players_to_move = team1more//2
+                    self.auto_move_players( 1, players_to_move)
 
-        else:
-            players_to_move = team2more//2
-            self.auto_move_players( 2, players_to_move)
+                else:
+                    players_to_move = team2more//2
+                    self.auto_move_players( 2, players_to_move)
+
+        self._run_autobalancer = False
+        self.start_autobalance_cron()
 
     def auto_move_players(self, team, players):
         if team == 1:
@@ -1417,8 +1433,8 @@ class Poweradminbf3Plugin(Plugin):
 
         if players > 0:
             self.console.say('Not enough players to move')
-        self._run_autobalancer = False
-        self.start_autobalance_cron()
+
+
     def autobalance_time(self):
         sec = self._autobalance_timer
         min = int(time.strftime('%M'))
@@ -1431,6 +1447,7 @@ class Poweradminbf3Plugin(Plugin):
             min -= 60
 
         return min, sec
+
     def start_autobalance_cron(self):
         if self._cronTab_autobalance:
             # remove existing crontab
@@ -1454,7 +1471,16 @@ class Poweradminbf3Plugin(Plugin):
                 team1 += 1
             if cl.teamId == 2:
                 team2 += 1
+
         return team1, team2
+
+    def set_swap_threshold(self, count):
+        self._team_swap_threshold_current = self._team_swap_threshold
+        if self._team_swap_threshold_prop:
+            if count > 20:
+                self._team_swap_threshold_current +=1
+            if count > 40:
+                self._team_swap_threshold_current +=1
 
     def client_connect(self, client):
         """

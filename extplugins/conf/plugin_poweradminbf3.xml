@@ -79,6 +79,7 @@
         <set name="autobalance">On</set>
         <set name="autobalance_timer">120</set>
         <set name="team_swap_threshold">3</set>
+		<set name="team_swap_threshold_prop">False</set>
 	</settings>
 
     <settings name="scrambler">
